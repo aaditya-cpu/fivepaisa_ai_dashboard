@@ -453,6 +453,7 @@ else:
             # )
             # Placeholder chart
             import numpy as np # ensure numpy is imported
+            INITIAL_CANDLES_TO_DISPLAY = 100  # Number of candles to display on the chart
             df_plot = st.session_state["current_ohlcv_df"].tail(INITIAL_CANDLES_TO_DISPLAY)
             fig = go.Figure(data=[go.Candlestick(x=df_plot.index,
                                                open=df_plot['Open'],
