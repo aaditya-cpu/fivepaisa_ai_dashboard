@@ -1,0 +1,40 @@
+# Core
+streamlit
+pandas
+numpy
+requests
+
+# 5paisa API
+py5paisa
+
+# Plotting
+plotly
+plotly_express # Though plotly express is part of plotly, explicitly listing can be helpful
+
+# Technical Indicators
+pandas-ta
+
+# Machine Learning (Core for MVP - LightGBM)
+scikit-learn
+lightgbm
+# optuna # For hyperparameter tuning - can be added when we implement model training
+joblib # For saving/loading models
+
+# Date/Time handling (often implicitly used but good to be aware)
+python-dotenv # For loading environment variables if needed outside Streamlit secrets
+
+# Optional but often useful for data handling & performance
+pyarrow # For efficient Parquet file handling
+
+# --- Libraries for later phases (as per your full list) ---
+# # Advanced ML Models
+# tensorflow
+# xgboost
+# catboost
+# prophet
+# statsmodels # For ARIMA, SARIMA, Holt-Winters
+# keras # Often used with tensorflow
+
+# # Visualization (if more advanced features needed beyond plotly)
+# matplotlib
+# seaborn
