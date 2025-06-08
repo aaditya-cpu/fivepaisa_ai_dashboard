@@ -183,10 +183,15 @@ def login_via_totp_session(totp_code: str) -> bool:
             # The py5paisa get_totp_session directly sets up the access token internally.
             # It implicitly handles the Request Token -> Access Token flow.
             # The response of get_totp_session is usually the underlying raw API response.
+            # The py5paisa ``get_totp_session`` method accepts positional
+            # parameters ``client_code``, ``totp`` and ``pin``.  Using keyword
+            # arguments like ``ClientCode`` will raise ``TypeError``.  We pass
+            # the values positionally to ensure compatibility across versions
+            # of the library.
             login_response = client.get_totp_session(
-                ClientCode=client_code_from_env,
-                TOTP=totp_code,
-                PIN=pin_from_env
+                client_code_from_env,
+                totp_code,
+                pin_from_env,
             )
             logger.debug(f"Raw 5paisa TOTP Login API Response: {login_response}")
 
