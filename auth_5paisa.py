@@ -17,10 +17,11 @@ Key Responsibilities:
 import streamlit as st
 from py5paisa import FivePaisaClient
 import logging
-
+import os
+from dotenv import load_dotenv
 # Import configurations
 from config import APP_TITLE # For consistent logging/messaging
-
+load_dotenv()
 # Configure a dedicated logger for this module
 logger = logging.getLogger(f"{APP_TITLE}.Auth")
 # Basic logging configuration (can be expanded in a central logging setup if needed)
@@ -42,54 +43,51 @@ SESSION_STATE_KEY_USER_KEY = "5paisa_user_key" # Storing for potential use with 
 
 # --- Helper Functions ---
 
-def _load_credentials_from_secrets() -> dict | None:
-    """
-    Loads 5paisa API credentials from Streamlit's secrets.
-    Returns a dictionary expected by py5paisa or None if secrets are missing.
-    """
-    required_secrets = [
+def _load_credentials_from_env() -> dict | None:
+    """Loads 5paisa API credentials from environment variables (.env)."""
+    required_envs = [
         "APP_NAME", "APP_SOURCE", "USER_ID",
         "PASSWORD", "USER_KEY", "ENCRYPTION_KEY"
     ]
-    missing_secrets = [key for key in required_secrets if key not in st.secrets]
+    missing_envs = [key for key in required_envs if not os.getenv(key)]
 
-    if missing_secrets:
-        logger.error(f"Missing required API credentials in secrets.toml: {', '.join(missing_secrets)}")
+    if missing_envs:
+        logger.error(
+            f"Missing required API credentials in .env: {', '.join(missing_envs)}"
+        )
         st.error(
-            f"Critical API credentials missing in `.streamlit/secrets.toml`: {', '.join(missing_secrets)}. "
+            f"Critical API credentials missing in `.env`: {', '.join(missing_envs)}. "
             "Please configure them to proceed."
         )
         return None
 
     cred = {
-        "APP_NAME": st.secrets["APP_NAME"],
-        "APP_SOURCE": st.secrets["APP_SOURCE"],
-        "USER_ID": st.secrets["USER_ID"],
-        "PASSWORD": st.secrets["PASSWORD"],
-        "USER_KEY": st.secrets["USER_KEY"],
-        "ENCRYPTION_KEY": st.secrets["ENCRYPTION_KEY"]
+        "APP_NAME": os.getenv("APP_NAME"),
+        "APP_SOURCE": os.getenv("APP_SOURCE"),
+        "USER_ID": os.getenv("USER_ID"),
+        "PASSWORD": os.getenv("PASSWORD"),
+        "USER_KEY": os.getenv("USER_KEY"),
+        "ENCRYPTION_KEY": os.getenv("ENCRYPTION_KEY"),
     }
     if SESSION_STATE_KEY_USER_KEY not in st.session_state:
-        st.session_state[SESSION_STATE_KEY_USER_KEY] = st.secrets["USER_KEY"]
-    logger.info("Successfully loaded API credentials from secrets.")
+        st.session_state[SESSION_STATE_KEY_USER_KEY] = os.getenv("USER_KEY")
+    logger.info("Successfully loaded API credentials from .env.")
     return cred
 
-def _get_totp_login_details_from_secrets() -> tuple[str | None, str | None]:
-    """
-    Loads Client Code and PIN for TOTP login from Streamlit's secrets.
-    """
-    client_code = st.secrets.get("CLIENT_CODE")
-    pin = st.secrets.get("PIN")
+
+def _get_totp_login_details_from_env() -> tuple[str | None, str | None]:
+    """Loads Client Code and PIN for TOTP login from environment variables."""
+    client_code = os.getenv("CLIENT_CODE")
+    pin = os.getenv("PIN")
 
     if not client_code:
-        logger.error("CLIENT_CODE missing from secrets.toml for TOTP login.")
-        st.error("CLIENT_CODE is missing in `.streamlit/secrets.toml`. This is required for login.")
+        logger.error("CLIENT_CODE missing from .env for TOTP login.")
+        st.error("CLIENT_CODE is missing in `.env`. This is required for login.")
     if not pin:
-        logger.error("PIN missing from secrets.toml for TOTP login.")
-        st.error("PIN (MPIN) is missing in `.streamlit/secrets.toml`. This is required for login.")
+        logger.error("PIN missing from .env for TOTP login.")
+        st.error("PIN (MPIN) is missing in `.env`. This is required for login.")
 
     return client_code, pin
-
 
 # --- Main Authentication Functions ---
 
@@ -105,14 +103,14 @@ def login_via_totp_session(totp_code: str) -> bool:
         bool: True if login was successful, False otherwise.
     """
     st.session_state[SESSION_STATE_KEY_LOGGED_IN_STATUS] = False # Reset status
-
-    creds = _load_credentials_from_secrets()
+    creds = _load_credentials_from_env()
+    # creds = _load_credentials_from_secrets()
     if not creds:
         return False # Error already shown by _load_credentials_from_secrets
 
-    client_code_from_secrets, pin_from_secrets = _get_totp_login_details_from_secrets()
-    if not client_code_from_secrets or not pin_from_secrets:
-        return False # Error already shown
+    client_code_from_env, pin_from_env = _get_totp_login_details_from_env()
+    if not client_code_from_env or not pin_from_env:
+        return False
 
     try:
         with st.spinner("Attempting login with 5paisa... Please wait."):
@@ -123,9 +121,9 @@ def login_via_totp_session(totp_code: str) -> bool:
             # It implicitly handles the Request Token -> Access Token flow.
             # The response of get_totp_session is usually the underlying raw API response.
             login_response = client.get_totp_session(
-                ClientCode=client_code_from_secrets,
+                ClientCode=client_code_from_env,
                 TOTP=totp_code,
-                PIN=pin_from_secrets
+                PIN=pin_from_env
             )
             logger.debug(f"Raw 5paisa TOTP Login API Response: {login_response}")
 
@@ -229,11 +227,17 @@ def display_login_form(cols=None):
             return
 
         # Ensure base credentials are configurable before showing login form
-        creds_check = _load_credentials_from_secrets()
-        client_code_check, pin_check = _get_totp_login_details_from_secrets()
+        creds_check = _load_credentials_from_env()
+        client_code_check, pin_check = _load_credentials_from_env()
         if not creds_check or not client_code_check or not pin_check:
             st.warning("Please ensure all API credentials, Client Code, and PIN are correctly set in `.streamlit/secrets.toml`.")
             return # Don't show form if base secrets are missing
+        # Show TOTP input form
+        st.info("To log in, you need to provide your TOTP code from your authenticator app (like Google Authenticator).")
+        st.markdown("### TOTP Login")
+        st.markdown("1. Open your authenticator app (e.g., Google Authenticator).")
+        st.markdown("2. Find the 6-digit code for your 5paisa account.")
+        st.markdown("3. Enter the code below to log in.") 
 
         st.markdown("Enter your TOTP from your authenticator app.")
         with st.form(key="login_form"):

@@ -523,8 +523,23 @@ st.markdown(
 
 # --- Main execution for when app.py is run directly ---
 if __name__ == "__main__":
-    # This part is mostly for structure; Streamlit handles the run.
-    # You could add specific startup tasks here if not handled by initialize_session_state
-    # or if you were running some pre-checks.
+    # Streamlit apps should be launched with `streamlit run`. If this file is
+    # executed directly via `python app.py`, the Streamlit context is not
+    # available which leads to many "missing ScriptRunContext" warnings.  This
+    # guard prints a helpful message and exits early when the app is started
+    # incorrectly.
+    from streamlit.runtime.scriptrunner import get_script_run_ctx
+    import sys
+
+    if get_script_run_ctx() is None:
+        print(
+            "This application is a Streamlit app. "
+            "Run it using:  streamlit run app.py"
+        )
+        sys.exit(0)
+
+    # When executed within Streamlit this block can be used for one time start
+    # up tasks.  Currently we simply show a fun greeting if the user is not yet
+    # logged in.
     if not is_user_logged_in():
-        st.balloons() # Just a little welcome if not logged in
+        st.balloons()  # Just a little welcome if not logged in
