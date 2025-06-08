@@ -79,5 +79,8 @@ See `requirements.txt` for the Python packages needed.  Major dependencies inclu
    streamlit run app.py
    ```
 
+   Running `python app.py` directly will produce "missing ScriptRunContext" warnings
+   and is not supported.
+
 This README provides a high‑level tour of the current codebase.  Many parts are placeholders and will evolve as the dashboard gains more features.
 

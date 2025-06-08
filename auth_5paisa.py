@@ -19,7 +19,9 @@ import logging
 import os
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Load environment variables from .env file once at import.  ``load_dotenv``
+# gracefully handles the case where the file does not exist so this is safe
+# even in development environments.
 load_dotenv()
 
 # Import configurations
@@ -96,7 +98,15 @@ def _get_totp_login_details_from_secrets() -> tuple[str | None, str | None]:
     return client_code, pin
 
 def _load_credentials_from_env() -> dict | None:
-    """Loads 5paisa API credentials from environment variables (.env)."""
+    """Loads 5paisa API credentials from environment variables (.env).
+
+    ``load_dotenv`` is called here as a safeguard in case this function is
+    invoked before the module-level call at import time (for instance when
+    running unit tests).  It has no effect if the environment is already
+    configured.
+    """
+    # Ensure env vars are loaded even if this function is called independently
+    load_dotenv(override=False)
     required_envs = [
         "APP_NAME", "APP_SOURCE", "USER_ID",
         "PASSWORD", "USER_KEY", "ENCRYPTION_KEY"
