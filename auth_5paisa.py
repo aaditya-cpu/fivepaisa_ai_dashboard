@@ -1,5 +1,4 @@
 # fivepaisa_ai_dashboard/auth_5paisa.py
-
 """
 Authentication Module for 5paisa API
 
@@ -7,7 +6,7 @@ Handles the login process, token generation, and session management
 for interacting with the 5paisa trading APIs using the `py5paisa` SDK.
 
 Key Responsibilities:
-- Load API credentials securely from Streamlit secrets.
+- Load API credentials from environment variables (via a `.env` file).
 - Provide a UI for TOTP and PIN entry.
 - Manage the `RequestToken` and `AccessToken`.
 - Store client and token information in Streamlit's session state.
@@ -19,64 +18,83 @@ from py5paisa import FivePaisaClient
 import logging
 import os
 from dotenv import load_dotenv
-# Import configurations
-from config import APP_TITLE # For consistent logging/messaging
+
+# Load environment variables once at import time. Safe even if `.env` is absent.
 load_dotenv()
-# Configure a dedicated logger for this module
+
+# Import configurations
+from config import APP_TITLE  # For consistent logging/messaging
+
+# --------------------------------------------------------------------------- #
+#                                 Logging                                     #
+# --------------------------------------------------------------------------- #
 logger = logging.getLogger(f"{APP_TITLE}.Auth")
-# Basic logging configuration (can be expanded in a central logging setup if needed)
-if not logger.handlers: # Avoid adding multiple handlers if reloaded
+if not logger.handlers:  # Avoid adding multiple handlers if the module reloads
     handler = logging.StreamHandler()
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
 
-
-# --- Constants for Session State ---
+# --------------------------------------------------------------------------- #
+#                               Session‑state keys                            #
+# --------------------------------------------------------------------------- #
 SESSION_STATE_KEY_CLIENT = "5paisa_client_instance"
 SESSION_STATE_KEY_CLIENT_CODE = "5paisa_client_code"
 SESSION_STATE_KEY_ACCESS_TOKEN = "5paisa_access_token"
-SESSION_STATE_KEY_REQUEST_TOKEN = "5paisa_request_token" # For OAuth, less used with TOTP
+SESSION_STATE_KEY_REQUEST_TOKEN = "5paisa_request_token"  # For OAuth, rarely used
 SESSION_STATE_KEY_LOGGED_IN_STATUS = "5paisa_logged_in"
-SESSION_STATE_KEY_USER_KEY = "5paisa_user_key" # Storing for potential use with Access Token generation
+SESSION_STATE_KEY_USER_KEY = "5paisa_user_key"  # May be required for refresh
 
-# --- Helper Functions ---
+# --------------------------------------------------------------------------- #
+#                                Helper functions                             #
+# --------------------------------------------------------------------------- #
 
 def _load_credentials_from_env() -> dict | None:
-    """Loads 5paisa API credentials from environment variables (.env)."""
-    required_envs = [
-        "APP_NAME", "APP_SOURCE", "USER_ID",
-        "PASSWORD", "USER_KEY", "ENCRYPTION_KEY"
-    ]
-    missing_envs = [key for key in required_envs if not os.getenv(key)]
+    """Load 5paisa API credentials from environment variables (.env).
 
-    if missing_envs:
-        logger.error(
-            f"Missing required API credentials in .env: {', '.join(missing_envs)}"
-        )
+    Returns
+    -------
+    dict | None
+        Dictionary compatible with `py5paisa.FivePaisaClient(cred=...)` or
+        *None* if any of the required variables are missing (an error is shown
+        to the user in that case).
+    """
+    # Ensure env vars are loaded even if this function is called independently
+    load_dotenv(override=False)
+
+    required_envs = [
+        "APP_NAME",
+        "APP_SOURCE",
+        "USER_ID",
+        "PASSWORD",
+        "USER_KEY",
+        "ENCRYPTION_KEY",
+    ]
+    missing = [key for key in required_envs if not os.getenv(key)]
+
+    if missing:
+        logger.error("Missing required API credentials in .env: %s", ", ".join(missing))
         st.error(
-            f"Critical API credentials missing in `.env`: {', '.join(missing_envs)}. "
+            f"Critical API credentials missing in `.env`: {', '.join(missing)}. "
             "Please configure them to proceed."
         )
         return None
 
-    cred = {
-        "APP_NAME": os.getenv("APP_NAME"),
-        "APP_SOURCE": os.getenv("APP_SOURCE"),
-        "USER_ID": os.getenv("USER_ID"),
-        "PASSWORD": os.getenv("PASSWORD"),
-        "USER_KEY": os.getenv("USER_KEY"),
-        "ENCRYPTION_KEY": os.getenv("ENCRYPTION_KEY"),
-    }
+    cred = {key: os.getenv(key) for key in required_envs}
+
+    # Cache USER_KEY in session_state for potential future use (token refresh).
     if SESSION_STATE_KEY_USER_KEY not in st.session_state:
-        st.session_state[SESSION_STATE_KEY_USER_KEY] = os.getenv("USER_KEY")
+        st.session_state[SESSION_STATE_KEY_USER_KEY] = cred["USER_KEY"]
+
     logger.info("Successfully loaded API credentials from .env.")
     return cred
 
 
 def _get_totp_login_details_from_env() -> tuple[str | None, str | None]:
-    """Loads Client Code and PIN for TOTP login from environment variables."""
+    """Return `(CLIENT_CODE, PIN)` read from environment variables."""
     client_code = os.getenv("CLIENT_CODE")
     pin = os.getenv("PIN")
 
@@ -89,136 +107,141 @@ def _get_totp_login_details_from_env() -> tuple[str | None, str | None]:
 
     return client_code, pin
 
-# --- Main Authentication Functions ---
+# --------------------------------------------------------------------------- #
+#                          Main authentication functions                      #
+# --------------------------------------------------------------------------- #
 
 def login_via_totp_session(totp_code: str) -> bool:
-    """
-    Attempts to log in using the TOTP session method.
-    Stores client instance and tokens in session_state on success.
+    """Attempt to log in using the TOTP session method.
 
-    Args:
-        totp_code (str): The TOTP code from the authenticator app.
+    Parameters
+    ----------
+    totp_code : str
+        The 6‑digit TOTP generated by the authenticator app.
 
-    Returns:
-        bool: True if login was successful, False otherwise.
+    Returns
+    -------
+    bool
+        *True* if the login succeeds, *False* otherwise.
     """
-    st.session_state[SESSION_STATE_KEY_LOGGED_IN_STATUS] = False # Reset status
+    # Reset status at the start of every attempt
+    st.session_state[SESSION_STATE_KEY_LOGGED_IN_STATUS] = False
+
     creds = _load_credentials_from_env()
-    # creds = _load_credentials_from_secrets()
     if not creds:
-        return False # Error already shown by _load_credentials_from_secrets
+        return False
 
-    client_code_from_env, pin_from_env = _get_totp_login_details_from_env()
-    if not client_code_from_env or not pin_from_env:
+    client_code, pin = _get_totp_login_details_from_env()
+    if not client_code or not pin:
         return False
 
     try:
-        with st.spinner("Attempting login with 5paisa... Please wait."):
+        with st.spinner("Attempting login with 5paisa… Please wait."):
             client = FivePaisaClient(cred=creds)
-            logger.info(f"Attempting TOTP login for Client Code: {client_code_from_secrets}")
+            logger.info("Attempting TOTP login for Client Code: %s", client_code)
 
-            # The py5paisa get_totp_session directly sets up the access token internally.
-            # It implicitly handles the Request Token -> Access Token flow.
-            # The response of get_totp_session is usually the underlying raw API response.
+            # get_totp_session internally handles the RequestToken → AccessToken flow.
             login_response = client.get_totp_session(
-                ClientCode=client_code_from_env,
+                ClientCode=client_code,
                 TOTP=totp_code,
-                PIN=pin_from_env
+                PIN=pin,
             )
-            logger.debug(f"Raw 5paisa TOTP Login API Response: {login_response}")
+            logger.debug("Raw 5paisa TOTP login API response: %s", login_response)
 
-            # py5paisa's get_totp_session, upon success, should make the client usable.
-            # We should verify this by trying to fetch the access token or making a simple call.
-            # The access token is stored within the client object by py5paisa.
-            access_token = client.get_access_token() # This should return the token if login was successful
+            # py5paisa stores the access token inside `client` on success
+            access_token = client.get_access_token()
 
-            if access_token and client.client_code: # client.client_code is also set by py5paisa
+            if access_token and client.client_code:
+                # Persist relevant data into the Streamlit session
                 st.session_state[SESSION_STATE_KEY_CLIENT] = client
                 st.session_state[SESSION_STATE_KEY_CLIENT_CODE] = client.client_code
                 st.session_state[SESSION_STATE_KEY_ACCESS_TOKEN] = access_token
                 st.session_state[SESSION_STATE_KEY_LOGGED_IN_STATUS] = True
-                logger.info(f"Login successful for Client Code: {client.client_code}. Access Token obtained.")
+
+                logger.info(
+                    "Login successful for Client Code: %s. Access Token obtained.",
+                    client.client_code,
+                )
                 st.success(f"Successfully logged in as Client Code: {client.client_code}")
                 return True
+
+            # -------------------- handle known error scenarios --------------------
+            status = login_response.get("body", {}).get("Status")
+            message = login_response.get("body", {}).get("Message", "Unknown login error.")
+
+            if status == 1:
+                error_msg = f"Login failed: Invalid credentials or PIN. ({message})"
+            elif status == 2:
+                error_msg = f"Login failed: Invalid or expired TOTP. ({message})"
             else:
-                # Attempt to parse specific error messages if possible
-                # Based on 5paisa documentation, the response from TOTPLogin includes:
-                # Status: 0 (Success), 1 (Invalid login/password), 2 (OTP used/invalid TOTP)
-                # Message: Description string
-                status = login_response.get("body", {}).get("Status")
-                message = login_response.get("body", {}).get("Message", "Unknown login error.")
+                error_msg = f"Login failed: {message} (Status: {status})"
 
-                if status == 1:
-                    error_msg = f"Login Failed: Invalid credentials or PIN. ({message})"
-                elif status == 2:
-                    error_msg = f"Login Failed: Invalid or expired TOTP. ({message})"
-                else:
-                    error_msg = f"Login Failed: {message} (Status: {status})"
+            logger.error(error_msg)
+            st.error(error_msg)
+            return False
 
-                logger.error(error_msg)
-                st.error(error_msg)
-                return False
-
-    except Exception as e:
-        logger.critical(f"An unexpected error occurred during TOTP login: {e}", exc_info=True)
-        st.error(f"An unexpected error occurred: {e}. Check logs for details.")
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.critical(
+            "An unexpected error occurred during TOTP login: %s", exc, exc_info=True
+        )
+        st.error(f"An unexpected error occurred: {exc}. Check logs for details.")
         return False
 
+
 def logout():
-    """
-    Clears session state related to 5paisa login.
-    Note: This does not invalidate the AccessToken on the 5paisa server side immediately,
-          but removes it from the current browser session.
-    """
+    """Clear all 5paisa‑related keys from Streamlit session_state."""
     keys_to_clear = [
         SESSION_STATE_KEY_CLIENT,
         SESSION_STATE_KEY_CLIENT_CODE,
         SESSION_STATE_KEY_ACCESS_TOKEN,
         SESSION_STATE_KEY_REQUEST_TOKEN,
         SESSION_STATE_KEY_LOGGED_IN_STATUS,
-        SESSION_STATE_KEY_USER_KEY
+        SESSION_STATE_KEY_USER_KEY,
     ]
     for key in keys_to_clear:
-        if key in st.session_state:
-            del st.session_state[key]
+        st.session_state.pop(key, None)
+
     logger.info("User logged out. Session cleared.")
     st.info("You have been logged out.")
-    st.rerun() # Rerun to reflect logout state in UI
+    st.rerun()
+
 
 def get_authenticated_client() -> FivePaisaClient | None:
-    """
-    Retrieves the authenticated 5paisa client instance from session state.
-    Returns None if not logged in or client not found.
-    """
-    if st.session_state.get(SESSION_STATE_KEY_LOGGED_IN_STATUS, False):
+    """Return a cached, authenticated `FivePaisaClient` instance or *None*."""
+    if st.session_state.get(SESSION_STATE_KEY_LOGGED_IN_STATUS):
         client = st.session_state.get(SESSION_STATE_KEY_CLIENT)
         if client and isinstance(client, FivePaisaClient):
-            # Optionally, you can add a check here to see if the token is still valid
-            # by making a lightweight API call, but this adds overhead.
-            # For now, we assume if it's in session, it's good.
             return client
-        else:
-            logger.warning("Logged in status is true, but client instance not found or invalid in session.")
-            st.session_state[SESSION_STATE_KEY_LOGGED_IN_STATUS] = False # Correct the state
-            return None
+
+        logger.warning(
+            "Logged‑in status was True but no valid client instance found. "
+            "Resetting status flag."
+        )
+        st.session_state[SESSION_STATE_KEY_LOGGED_IN_STATUS] = False
     return None
 
+
 def is_user_logged_in() -> bool:
-    """Checks if the user is currently marked as logged in."""
+    """Quick check whether the user is currently logged in."""
     return st.session_state.get(SESSION_STATE_KEY_LOGGED_IN_STATUS, False)
 
-# --- UI Component for Login ---
+# --------------------------------------------------------------------------- #
+#                           UI helper (Streamlit)                             #
+# --------------------------------------------------------------------------- #
+
 def display_login_form(cols=None):
+    """Render the TOTP login form in the Streamlit UI.
+
+    Parameters
+    ----------
+    cols :
+        Optional tuple of Streamlit columns. If provided, the form is rendered
+        inside the first column; otherwise it appears in the sidebar.
     """
-    Displays the login form (TOTP input) in the Streamlit UI.
-    Uses provided columns for layout if available.
-    """
-    if cols:
-        login_container = cols[0] # Or st depending on layout
-    else:
-        login_container = st.sidebar # Default to sidebar
+    login_container = cols[0] if cols else st.sidebar
 
     with login_container.expander("🔒 **5paisa Login**", expanded=not is_user_logged_in()):
+        # Show logged‑in state with a logout button
         if is_user_logged_in():
             client_code = st.session_state.get(SESSION_STATE_KEY_CLIENT_CODE, "N/A")
             st.success(f"Logged in as: **{client_code}**")
@@ -226,68 +249,65 @@ def display_login_form(cols=None):
                 logout()
             return
 
-        # Ensure base credentials are configurable before showing login form
+        # Validate that credentials are present before exposing the form
         creds_check = _load_credentials_from_env()
-        client_code_check, pin_check = _load_credentials_from_env()
+        client_code_check, pin_check = _get_totp_login_details_from_env()
         if not creds_check or not client_code_check or not pin_check:
-            st.warning("Please ensure all API credentials, Client Code, and PIN are correctly set in `.streamlit/secrets.toml`.")
-            return # Don't show form if base secrets are missing
-        # Show TOTP input form
-        st.info("To log in, you need to provide your TOTP code from your authenticator app (like Google Authenticator).")
-        st.markdown("### TOTP Login")
-        st.markdown("1. Open your authenticator app (e.g., Google Authenticator).")
-        st.markdown("2. Find the 6-digit code for your 5paisa account.")
-        st.markdown("3. Enter the code below to log in.") 
+            st.warning(
+                "Please ensure all API credentials, Client Code, and PIN are "
+                "correctly set in your `.env` file."
+            )
+            return
 
-        st.markdown("Enter your TOTP from your authenticator app.")
+        # Explanatory text
+        st.info(
+            "Enter the 6‑digit code from your authenticator app (e.g. Google "
+            "Authenticator) to log in."
+        )
+
+        # The actual form
         with st.form(key="login_form"):
             totp_input = st.text_input(
                 "TOTP Code",
                 max_chars=6,
                 type="password",
                 placeholder="******",
-                help="6-digit code from Google Authenticator or similar app."
+                help="6‑digit code from Google Authenticator or similar app.",
             )
             submit_button = st.form_submit_button(label="Login")
 
             if submit_button:
-                if not totp_input or not totp_input.isdigit() or len(totp_input) != 6:
-                    st.error("Please enter a valid 6-digit TOTP.")
-                else:
-                    if login_via_totp_session(totp_input):
-                        st.rerun() # Rerun to update UI state post-login
-                    # Error messages are handled within login_via_totp_session
+                if not (totp_input.isdigit() and len(totp_input) == 6):
+                    st.error("Please enter a valid 6‑digit TOTP.")
+                elif login_via_totp_session(totp_input):
+                    st.rerun()  # Refresh the UI after successful login
 
-# --- Example Usage (for testing this module directly) ---
+# --------------------------------------------------------------------------- #
+#                          Stand‑alone test entry‑point                       #
+# --------------------------------------------------------------------------- #
+
 if __name__ == "__main__":
     st.set_page_config(page_title="Auth Test", layout="wide")
     st.title("5paisa Authentication Module Test")
 
-    st.info("This page tests the authentication module. Configure secrets in `.streamlit/secrets.toml`.")
+    # Prepare session keys for direct execution
+    st.session_state.setdefault(SESSION_STATE_KEY_LOGGED_IN_STATUS, False)
 
-    # Initialize session state keys if not present for testing
-    if SESSION_STATE_KEY_LOGGED_IN_STATUS not in st.session_state:
-        st.session_state[SESSION_STATE_KEY_LOGGED_IN_STATUS] = False
-
-    display_login_form() # Display in sidebar
+    display_login_form()
 
     st.divider()
     st.subheader("Session State Inspector:")
-    st.json(st.session_state)
+    st.json(dict(st.session_state))
 
     if is_user_logged_in():
-        st.success("User is logged in!")
+        st.success("User is logged in.")
         client = get_authenticated_client()
         if client:
-            st.write("Authenticated client instance retrieved.")
             try:
-                with st.spinner("Fetching holdings as a test..."):
-                    holdings = client.holdings() # Example API call
-                    st.write("Holdings Response:")
-                    st.json(holdings if holdings else "No holdings data or error.")
-            except Exception as e:
-                st.error(f"Error fetching holdings: {e}")
-        else:
-            st.error("Could not retrieve authenticated client instance.")
+                with st.spinner("Fetching holdings as a quick test…"):
+                    holdings = client.holdings()
+                    st.json(holdings)
+            except Exception as exc:  # pylint: disable=broad-except
+                st.error(f"Error fetching holdings: {exc}")
     else:
         st.warning("User is not logged in.")
