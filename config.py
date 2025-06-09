@@ -227,8 +227,8 @@ PREDICTION_HORIZONS: dict[str, dict] = {
     "daily_1d":     {"label": "Next Day",            "forward_periods": 1, "source_timeframe": "1d",  "target_type": "classification", "model_prefix": "daily_1d"},
     "weekly_1w":    {"label": "Next Week (5D)",      "forward_periods": 5, "source_timeframe": "1d",  "target_type": "regression",     "model_prefix": "weekly_1w"},
     "monthly_1m":   {"label": "Next Month (20D)",    "forward_periods": 20, "source_timeframe": "1d", "target_type": "regression",     "model_prefix": "monthly_1m"},
-    # "quarterly_3m": {"label": "Next Quarter (60D)",  "forward_periods": 60, "source_timeframe": "1d", "target_type": "regression", "model_prefix": "quarterly_3m"},
-    # "yearly_1y":    {"label": "Next Year (252D)",    "forward_periods": 252, "source_timeframe": "1d", "target_type": "classification_long", "model_prefix": "yearly_1y"}
+    "quarterly_3m": {"label": "Next Quarter (60D)",  "forward_periods": 60, "source_timeframe": "1d", "target_type": "regression", "model_prefix": "quarterly_3m"},
+    "yearly_1y":    {"label": "Next Year (252D)",    "forward_periods": 252, "source_timeframe": "1d", "target_type": "classification_long", "model_prefix": "yearly_1y"}
 }
 
 # Default model architecture to use for each target_type

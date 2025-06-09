@@ -1,43 +1,59 @@
-# fivepaisa_ai_dashboard/patterns.py
-"""Utilities for detecting candlestick patterns."""
+
+"""Candlestick pattern detection utilities."""
 
 from __future__ import annotations
 
 import pandas as pd
-import pandas_ta as ta
-from typing import Optional
+import logging
 
-from config import CANDLESTICK_PATTERNS_TO_DETECT
+logger = logging.getLogger(__name__)
 
 
-def detect_candlestick_patterns(ohlcv_df: pd.DataFrame) -> pd.DataFrame:
-    """Return a DataFrame of detected candlestick patterns.
+def detect_candlestick_patterns(ohlcv_df: pd.DataFrame, pattern_list: list[str]) -> pd.DataFrame:
+    """Detect candlestick patterns in OHLCV data using pandas-ta.
 
-    The returned DataFrame is indexed by Datetime and contains columns:
-    ``pattern`` and ``direction`` ("bullish" or "bearish") and ``price`` which
-    is the associated high/low price for plotting markers.
+    Parameters
+    ----------
+    ohlcv_df : pd.DataFrame
+        DataFrame containing OHLCV data with Datetime index.
+    pattern_list : list[str]
+        List of candlestick pattern names compatible with ``pandas_ta``.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame of detected patterns with columns ``Datetime``, ``Pattern`` and ``Value``.
     """
     if ohlcv_df is None or ohlcv_df.empty:
-        return pd.DataFrame(columns=["pattern", "direction", "price"])
+        logger.warning("Empty OHLCV DataFrame provided to detect_candlestick_patterns")
+        return pd.DataFrame(columns=["Datetime", "Pattern", "Value"])
 
     results = []
-    for pattern in CANDLESTICK_PATTERNS_TO_DETECT:
+    for pattern in pattern_list:
         try:
             series = ohlcv_df.ta.cdl_pattern(name=pattern)
-        except Exception:
-            # Skip patterns not supported by pandas_ta
+        except Exception as exc:
+            logger.error("Failed to compute pattern %s: %s", pattern, exc)
             continue
+
         if series is None:
             continue
-        for idx, val in series.items():
-            if pd.isna(val) or val == 0:
-                continue
-            direction = "bullish" if val > 0 else "bearish"
-            price = ohlcv_df.loc[idx, "Low"] if val > 0 else ohlcv_df.loc[idx, "High"]
-            results.append({"Datetime": idx, "pattern": pattern, "direction": direction, "price": price})
+
+        occurrences = series[series != 0]
+        if occurrences.empty:
+            continue
+
+        pattern_df = pd.DataFrame({
+            "Datetime": occurrences.index,
+            "Pattern": pattern,
+            "Value": occurrences.values,
+        })
+        results.append(pattern_df)
 
     if not results:
-        return pd.DataFrame(columns=["pattern", "direction", "price"])
+        return pd.DataFrame(columns=["Datetime", "Pattern", "Value"])
 
-    df = pd.DataFrame(results).set_index("Datetime")
-    return df
+    result_df = pd.concat(results, ignore_index=True)
+    result_df.sort_values("Datetime", inplace=True)
+    result_df.reset_index(drop=True, inplace=True)
+    return result_df

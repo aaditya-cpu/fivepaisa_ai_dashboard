@@ -392,65 +392,49 @@ alpha_vantage_client = AlphaVantageAPI()
 @st.cache_data(ttl=3600 * 6, show_spinner="Fetching 5paisa Scrip Master...") # Cache for 6 hours
 def fetch_scrip_master(client: FivePaisaClient) -> Optional[pd.DataFrame]:
     """
-    Fetches the Scrip Master from 5paisa and saves it locally.
-    Returns a Pandas DataFrame or None on failure.
+    Retrieve the full Scrip-Master, validate it, cache locally, and return a DataFrame.
     """
     if not client:
         logger.error("5paisa client not authenticated for fetching scrip master.")
         return None
+
     try:
-        # First, try to load from local Parquet if available and recent enough (TTL handled by cache_data)
+        # Return cached parquet if valid
         if os.path.exists(SCRIPMASTER_PARQUET_PATH):
-            # Check file age if @st.cache_data TTL is not sufficient (e.g., daily refresh)
-            # For now, rely on @st.cache_data's TTL for simplicity
-            df_scrips = pd.read_parquet(SCRIPMASTER_PARQUET_PATH)
-            logger.info(f"Loaded Scrip Master from local Parquet: {SCRIPMASTER_PARQUET_PATH}")
-            if not df_scrips.empty:
-                 # Perform basic validation
-                required_cols = ['ScripCode', 'Symbol', 'FullName', 'Exch', 'ExchType', 'TickSize'] # Add more as needed
-                if all(col in df_scrips.columns for col in required_cols):
-                    return df_scrips
-                else:
-                    logger.warning("Local Scrip Master Parquet missing required columns. Re-fetching.")
+            df_cached = pd.read_parquet(SCRIPMASTER_PARQUET_PATH)
+            req_cols = ["ScripCode", "Symbol", "FullName", "Exch", "ExchType", "TickSize"]
+            if not df_cached.empty and all(c in df_cached.columns for c in req_cols):
+                logger.info("Loaded Scrip Master from local cache.")
+                return df_cached
+            logger.warning("Cached Scrip Master missing columns – refetching.")
 
-
-        logger.info("Fetching Scrip Master from 5paisa API...")
-        # The py5paisa get_scrips() method directly calls the ScripMaster API
-        # https://openapi.5paisa.com/VendorsAPI/Service1.svc/ScripMaster/segment/All
-        # This can be a large download.
-        # py5paisa's get_scrips() might return a list of dicts or handle parsing.
-        # Based on typical API responses, it's likely a list of scrip details.
-        scrips_data = client.get_scrips() # This function in py5paisa might need checking for its exact return type and structure.
-
-        if not scrips_data or not isinstance(scrips_data, list) or not scrips_data[0]:
-             logger.error("Failed to fetch Scrip Master from 5paisa or data is empty/invalid.")
-             st.error("Error fetching Scrip Master from 5paisa.")
-             return None
+        logger.info("Fetching Scrip Master from 5paisa API…")
+        scrips_data = client.get_scrips()
+        if not isinstance(scrips_data, list) or not scrips_data:
+            st.error("Error fetching Scrip Master from 5paisa.")
+            logger.error("Empty / invalid Scrip Master data.")
+            return None
 
         df_scrips = pd.DataFrame(scrips_data)
-        logger.info(f"Successfully fetched Scrip Master. Shape: {df_scrips.shape}")
+        req_cols = ["ScripCode", "Symbol", "FullName", "Exch", "ExchType", "TickSize"]
+        if not all(c in df_scrips.columns for c in req_cols):
+            st.error("Unexpected Scrip Master format from 5paisa.")
+            logger.error("Missing expected columns in Scrip Master.")
+            return None
 
-        # Pre-processing: Standardize column names if necessary, convert types
-        # Example: Ensure ScripCode is int, Symbol is str
-        if 'ScripCode' in df_scrips.columns:
-            df_scrips['ScripCode'] = pd.to_numeric(df_scrips['ScripCode'], errors='coerce').fillna(0).astype(int)
-        if 'Symbol' in df_scrips.columns:
-            df_scrips['Symbol'] = df_scrips['Symbol'].astype(str).str.strip()
-        # ... other processing ...
+        df_scrips["ScripCode"] = pd.to_numeric(df_scrips["ScripCode"], errors="coerce").fillna(0).astype(int)
+        df_scrips["Symbol"] = df_scrips["Symbol"].astype(str).str.strip()
 
-        # Save to Parquet and CSV
         df_scrips.to_parquet(SCRIPMASTER_PARQUET_PATH, index=False)
-        logger.info(f"Saved Scrip Master to Parquet: {SCRIPMASTER_PARQUET_PATH}")
-        # df_scrips.to_csv(SCRIPMASTER_CSV_PATH, index=False) # Optional CSV for readability
-        # logger.info(f"Saved Scrip Master to CSV: {SCRIPMASTER_CSV_PATH}")
+        df_scrips.to_csv(SCRIPMASTER_CSV_PATH, index=False)
+        logger.info("Saved Scrip Master to Parquet & CSV.")
 
         return df_scrips
 
-    except Exception as e:
-        logger.critical(f"Exception fetching/processing Scrip Master: {e}", exc_info=True)
+    except Exception as e:  # noqa: BLE001
+        logger.critical("Exception in fetch_scrip_master: %s", e, exc_info=True)
         st.error(f"An error occurred with Scrip Master: {e}")
         return None
-
 def get_scrip_details(scrip_master_df: Optional[pd.DataFrame], symbol: str) -> Optional[pd.Series]:
     """
     Finds scrip details (ScripCode, Exchange, etc.) from the Scrip Master DataFrame.
@@ -504,221 +488,129 @@ def get_scrip_details(scrip_master_df: Optional[pd.DataFrame], symbol: str) -> O
 # @st.cache_data(ttl=60*5, max_entries=20, show_spinner="Fetching historical stock data...") # Cache for 5 mins
 def fetch_historical_data(
     client: FivePaisaClient,
-    scrip_details: pd.Series, # Contains ScripCode, Exch, ExchType
+    scrip_details: pd.Series,
     timeframe: str,
-    days_back: Optional[int] = None
+    days_back: Optional[int] = None,
 ) -> Optional[pd.DataFrame]:
     """
-    Fetches historical OHLCV data for a given scrip from 5paisa.
-
-    Args:
-        client: Authenticated FivePaisaClient instance.
-        scrip_details: A pandas Series containing 'ScripCode', 'Exch', 'ExchType'.
-        timeframe: Data interval (e.g., '1m', '15m', '1d').
-        days_back: Number of days of data to fetch. Defaults from config.
-
-    Returns:
-        Pandas DataFrame with OHLCV data, or None on failure.
+    Download OHLCV history for a symbol and timeframe; return a cleaned DataFrame.
     """
     if not client:
-        logger.error("5paisa client not authenticated for fetching historical data.")
+        logger.error("Unauthenticated 5paisa client.")
         return None
-    if scrip_details is None or 'ScripCode' not in scrip_details or \
-       'Exch' not in scrip_details or 'ExchType' not in scrip_details:
-        logger.error(f"Invalid scrip_details provided: {scrip_details}")
-        st.error("Invalid scrip details for fetching data.")
+    if scrip_details is None or not {"ScripCode", "Exch", "ExchType"}.issubset(scrip_details.index):
+        st.error("Invalid scrip details.")
         return None
-
     if timeframe not in AVAILABLE_TIMEFRAMES:
-        logger.error(f"Invalid timeframe: {timeframe}. Supported: {AVAILABLE_TIMEFRAMES}")
-        st.error(f"Invalid timeframe selected: {timeframe}")
+        st.error(f"Invalid timeframe: {timeframe}")
         return None
 
-    scrip_code = int(scrip_details['ScripCode'])
-    exch = scrip_details['Exch']
-    exch_type = scrip_details['ExchType']
-    symbol_log = scrip_details.get('Symbol', str(scrip_code)) # For logging
+    scrip_code = int(scrip_details["ScripCode"])
+    exch, exch_type = scrip_details["Exch"], scrip_details["ExchType"]
+    symbol_log = scrip_details.get("Symbol", str(scrip_code))
 
     if days_back is None:
-        days_back = MAX_INTRADAY_LOOKBACK_DAYS if timeframe != '1d' else DEFAULT_HISTORICAL_DAYS_FETCH
+        days_back = MAX_INTRADAY_LOOKBACK_DAYS if timeframe != "1d" else DEFAULT_HISTORICAL_DAYS_FETCH
 
     end_date = datetime.now()
     start_date = end_date - timedelta(days=days_back)
+    from_date_str, to_date_str = start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")
 
-    # Format dates as YYYY-MM-DD for the API
-    from_date_str = start_date.strftime('%Y-%m-%d')
-    to_date_str = end_date.strftime('%Y-%m-%d')
-
-    logger.info(
-        f"Fetching historical data for {symbol_log} (Scrip: {scrip_code}, Exch: {exch}, Type: {exch_type}) "
-        f"TF: {timeframe}, From: {from_date_str}, To: {to_date_str}"
-    )
+    logger.info("5paisa hist-data %s (%s) TF=%s  %s→%s", symbol_log, scrip_code, timeframe, from_date_str, to_date_str)
 
     try:
-        # df_ohlcv = client.historical_data(Exchange=exch, ExchangeType=exch_type, ScripCode=scrip_code,
-        #                                 TimeFrame=timeframe, FromDate=from_date_str, ToDate=to_date_str)
-        # --- MOCK DATA FOR TESTING (REMOVE FOR ACTUAL 5PAISA INTEGRATION) ---
-        mock_dates = pd.to_datetime(pd.date_range(start=start_date, end=end_date, freq=TIMEFRAME_TO_PANDAS_FREQ.get(timeframe, 'B')))
-        if mock_dates.empty and timeframe != '1d': # for intraday, ensure some points
-            mock_dates = pd.to_datetime(pd.date_range(end=end_date, periods=200, freq=TIMEFRAME_TO_PANDAS_FREQ.get(timeframe, '15min')))
-        elif mock_dates.empty and timeframe == '1d':
-             mock_dates = pd.to_datetime(pd.date_range(end=end_date, periods=days_back, freq='B'))
+        df_ohlcv = client.historical_data(
+            Exch=exch,
+            ExchangeSegment=exch_type,
+            ScripCode=scrip_code,
+            time=timeframe,
+            From=from_date_str,
+            To=to_date_str,
+        )
 
-
-        data_size = len(mock_dates)
-        if data_size == 0:
-            logger.warning(f"No mock dates generated for {timeframe}. Returning empty DataFrame.")
+        if isinstance(df_ohlcv, str):
+            st.error(f"5paisa error: {df_ohlcv}"); logger.error(df_ohlcv); return None
+        if df_ohlcv is None or df_ohlcv.empty:
+            logger.warning("No historical data for %s.", symbol_log)
             return pd.DataFrame(columns=OHLCV_COLUMNS)
 
-        base_price = 100 + np.random.randint(-10, 10)
-        df_ohlcv = pd.DataFrame({
-            'Time': mock_dates, # 5paisa returns 'Time' column
-            'Open': base_price + np.cumsum(np.random.normal(0, 0.5, data_size)),
-            'High': 0.0, # Will compute
-            'Low': 0.0,  # Will compute
-            'Close': 0.0, # Will compute
-            'Volume': np.random.randint(1000, 100000, data_size)
-        })
-        df_ohlcv['Close'] = df_ohlcv['Open'] + np.random.normal(0, 1, data_size)
-        df_ohlcv['High'] = df_ohlcv[['Open', 'Close']].max(axis=1) + np.random.uniform(0, 2, data_size)
-        df_ohlcv['Low'] = df_ohlcv[['Open', 'Close']].min(axis=1) - np.random.uniform(0, 2, data_size)
-        # --- END OF MOCK DATA ---
+        if "Time" in df_ohlcv.columns:
+            df_ohlcv.rename(columns={"Time": "Datetime"}, inplace=True)
+        df_ohlcv["Datetime"] = pd.to_datetime(df_ohlcv["Datetime"])
+        df_ohlcv.set_index("Datetime", inplace=True)
 
-
-        if df_ohlcv is None or df_ohlcv.empty:
-            logger.warning(f"No historical data returned for {symbol_log} (Scrip: {scrip_code}) for the given period/timeframe.")
-            # st.info(f"No data found for {symbol_log} for the selected period/timeframe.")
-            return pd.DataFrame(columns=OHLCV_COLUMNS) # Return empty df with standard columns
-
-        # Standardize DataFrame:
-        # 1. Rename 'Time' to 'Datetime' and convert to datetime objects
-        if 'Time' in df_ohlcv.columns:
-            df_ohlcv.rename(columns={'Time': 'Datetime'}, inplace=True)
-        df_ohlcv['Datetime'] = pd.to_datetime(df_ohlcv['Datetime'])
-        df_ohlcv.set_index('Datetime', inplace=True)
-
-        # 2. Ensure OHLCV columns are numeric
-        for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+        for col in ["Open", "High", "Low", "Close", "Volume"]:
             if col in df_ohlcv.columns:
-                df_ohlcv[col] = pd.to_numeric(df_ohlcv[col], errors='coerce')
-            else: # Add missing OHLCV columns if not present, fill with NaN
-                logger.warning(f"Column '{col}' missing in historical data for {symbol_log}. Adding as NaN.")
+                df_ohlcv[col] = pd.to_numeric(df_ohlcv[col], errors="coerce")
+            else:
                 df_ohlcv[col] = np.nan
+                logger.warning("Column '%s' missing in API response.", col)
 
-
-        # 3. Ensure correct column order (as defined in config.OHLCV_COLUMNS, excluding Datetime as it's index)
-        cols_to_use = [col for col in OHLCV_COLUMNS if col != 'Datetime']
-        df_ohlcv = df_ohlcv[cols_to_use]
-
-        # 4. Sort by Datetime index
+        df_ohlcv = df_ohlcv[[c for c in OHLCV_COLUMNS if c != "Datetime"]]
         df_ohlcv.sort_index(inplace=True)
+        df_ohlcv.dropna(subset=["Close"], inplace=True)
 
-        # 5. Drop rows with NaN in crucial OHLC columns (Close is most important)
-        df_ohlcv.dropna(subset=['Close'], inplace=True)
-
-        logger.info(f"Processed historical data for {symbol_log}. Shape: {df_ohlcv.shape}")
+        logger.info("Processed historical data for %s. Shape=%s", symbol_log, df_ohlcv.shape)
         return df_ohlcv
 
-    except Exception as e:
-        logger.critical(f"Exception fetching historical data for {symbol_log} (Scrip: {scrip_code}): {e}", exc_info=True)
+    except Exception as e:  # noqa: BLE001
+        logger.critical("Exception fetching historical data: %s", e, exc_info=True)
         st.error(f"Error fetching historical data for {symbol_log}: {e}")
         return None
-
 
 # @st.cache_data(ttl=60*1, max_entries=50, show_spinner="Calculating technical indicators...") # Cache for 1 minute
 def calculate_technical_indicators(
     ohlcv_df: pd.DataFrame,
-    enabled_indicators_config: Dict[str, bool] # From st.session_state["enabled_indicators"]
+    enabled_indicators_config: Dict[str, bool]
 ) -> pd.DataFrame:
     """
-    Calculates enabled technical indicators using pandas_ta.
-    Merges indicator data with the original OHLCV DataFrame.
-
-    Args:
-        ohlcv_df: DataFrame with OHLCV data, indexed by Datetime.
-        enabled_indicators_config: Dict where keys are indicator identifiers from config.DEFAULT_INDICATORS
-                                   and values are boolean indicating if enabled.
-
-    Returns:
-        DataFrame with original OHLCV data and calculated indicator columns.
+    Add selected pandas-ta indicators to an OHLCV DataFrame.
     """
     if ohlcv_df is None or ohlcv_df.empty:
-        logger.warning("OHLCV data is empty. Cannot calculate indicators.")
-        return pd.DataFrame() # Return empty if no base data
+        logger.warning("OHLCV data empty – indicators skipped.")
+        return pd.DataFrame()
 
-    # Make a copy to avoid modifying the original DataFrame in session state directly
     data_with_indicators = ohlcv_df.copy()
 
-    # Ensure correct OHLC column names for pandas_ta if they are different
-    # pandas_ta typically expects 'open', 'high', 'low', 'close', 'volume' (lowercase)
-    # Our OHLCV_COLUMNS are 'Open', 'High', 'Low', 'Close', 'Volume'
-    # Create a temporary df with lowercase column names for pandas_ta if needed,
-    # or ensure pandas_ta can handle capitalized names (it usually can).
-    # For safety, let's rename for the scope of pandas_ta.
-    temp_df_for_ta = data_with_indicators.copy()
-    temp_df_for_ta.columns = [col.lower() for col in temp_df_for_ta.columns]
+    # pandas_ta expects lowercase columns
+    lowercase_map = {col: col.lower() for col in OHLCV_COLUMNS if col in data_with_indicators.columns}
+    temp_df_for_ta = data_with_indicators.rename(columns=lowercase_map).copy()
 
+    for ind_key, enabled in enabled_indicators_config.items():
+        if not enabled:
+            continue
+        if ind_key not in DEFAULT_INDICATORS:
+            logger.warning("Indicator %s enabled but not in config.", ind_key)
+            continue
 
-    for ind_key, is_enabled in enabled_indicators_config.items():
-        if is_enabled and ind_key in DEFAULT_INDICATORS:
-            config = DEFAULT_INDICATORS[ind_key]
-            func_name = config["function_name_pd_ta"]
-            params = config["params"]
-            # output_cols_expected = config["output_cols"] # Use this for validation if needed
+        cfg = DEFAULT_INDICATORS[ind_key]
+        func_name, params = cfg["function_name_pd_ta"], cfg["params"]
 
-            logger.debug(f"Calculating indicator: {ind_key} (Function: {func_name}, Params: {params})")
-            try:
-                # Get the pandas_ta function object
-                ta_func = getattr(ta, func_name)
+        try:
+            ta_func = getattr(temp_df_for_ta.ta, func_name)
+            indicator_output = ta_func(**params, append=False)
 
-                # Call the function. Most pandas_ta functions can be called directly on the DataFrame
-                # e.g., ohlcv_df.ta.sma(length=20, append=True)
-                # Or, using the functional approach: ta.sma(ohlcv_df['close'], length=20)
-                # We'll use the extension method `df.ta.<indicator>()` for convenience and auto-column naming.
+            if indicator_output is None or indicator_output.empty:
+                logger.warning("Indicator %s produced no data.", ind_key)
+                continue
 
-                # Prepare arguments for pandas_ta. Some functions need specific columns.
-                # Most common are close, high, low, open, volume.
-                # Ensure the `temp_df_for_ta` has these.
-                # The `append=False` ensures we get the indicator series/df back to merge manually,
-                # giving us control over column names if pandas_ta names are complex.
-                indicator_output = temp_df_for_ta.ta(kind=func_name, **params, append=False)
+            if isinstance(indicator_output, pd.Series):
+                out_name = cfg["output_cols"][0] if cfg["output_cols"] else indicator_output.name
+                data_with_indicators[out_name] = indicator_output.rename(out_name)
+            else:  # DataFrame
+                if len(indicator_output.columns) == len(cfg["output_cols"]):
+                    indicator_output.columns = cfg["output_cols"]
+                for col in indicator_output.columns:
+                    data_with_indicators[col] = indicator_output[col]
 
+            logger.debug("Calculated %s.", ind_key)
 
-                if indicator_output is None or indicator_output.empty:
-                    logger.warning(f"Indicator {ind_key} returned no data.")
-                    continue
+        except AttributeError:
+            logger.error("pandas_ta missing function '%s' for indicator '%s'.", func_name, ind_key)
+        except Exception as e:  # noqa: BLE001
+            logger.error("Error calculating %s: %s", ind_key, e, exc_info=True)
 
-                # pandas_ta might return a Series or a DataFrame
-                if isinstance(indicator_output, pd.Series):
-                    # If config.output_cols has one item, use it. Otherwise, use pandas_ta's default name.
-                    col_name = config["output_cols"][0] if len(config["output_cols"]) == 1 else indicator_output.name
-                    data_with_indicators[col_name] = indicator_output
-                elif isinstance(indicator_output, pd.DataFrame):
-                    # For multi-column indicators (MACD, BBANDS, Ichimoku, ADX etc.)
-                    # The column names from pandas_ta are usually like 'MACD_12_26_9', 'BBU_20_2.0'
-                    # These should match what's in config["output_cols"] and config["plot_info"]
-                    for col in indicator_output.columns:
-                        if col in config["output_cols"]: # Only add if it's an expected output
-                             data_with_indicators[col] = indicator_output[col]
-                        else:
-                             # If pandas_ta generates more columns than specified in output_cols,
-                             # we can choose to include them or ignore them.
-                             # For now, let's include them if they don't clash, but log it.
-                             if col not in data_with_indicators.columns:
-                                 data_with_indicators[col] = indicator_output[col]
-                                 logger.debug(f"Indicator {ind_key} generated extra column '{col}' not in config.output_cols, adding it.")
-                             # Else, it might be a duplicate or intermediate column we don't need.
-                logger.debug(f"Successfully calculated and merged {ind_key}.")
-
-            except AttributeError:
-                logger.error(f"Pandas TA function '{func_name}' for indicator '{ind_key}' not found or error in usage.")
-            except Exception as e:
-                logger.error(f"Error calculating indicator {ind_key}: {e}", exc_info=True)
-        elif is_enabled and ind_key not in DEFAULT_INDICATORS:
-             logger.warning(f"Indicator '{ind_key}' is enabled but not found in DEFAULT_INDICATORS configuration.")
-
-
-    logger.info(f"Finished calculating technical indicators. DataFrame shape: {data_with_indicators.shape}")
+    logger.info("Indicators added. Final shape: %s", data_with_indicators.shape)
     return data_with_indicators
 
 
