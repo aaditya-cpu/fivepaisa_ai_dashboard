@@ -22,6 +22,7 @@ joblib # For saving/loading models
 
 # Date/Time handling (often implicitly used but good to be aware)
 python-dotenv # For loading environment variables if needed outside Streamlit secrets
+setuptools
 
 # Optional but often useful for data handling & performance
 pyarrow # For efficient Parquet file handling
