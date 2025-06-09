@@ -1,7 +1,7 @@
 # Core
 streamlit
 pandas
-numpy
+numpy<2
 requests
 
 # 5paisa API

@@ -24,6 +24,8 @@ pip install -r requirements.txt
 ```
 
 The `setuptools` package is required so that `pandas-ta` can import `pkg_resources`.
+`numpy<2` is also necessary because newer `numpy` versions removed a `NaN` alias
+that `pandas-ta` uses.
 
 ### app.py
 * Configures the Streamlit page and applies a custom dark theme.
