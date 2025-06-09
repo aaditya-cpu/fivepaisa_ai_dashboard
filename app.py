@@ -1,8 +1,8 @@
 # fivepaisa_ai_dashboard/app.py
 
 import streamlit as st
-import pandas as pd # Placeholder for data
-import plotly.graph_objects as go # Placeholder for charts
+import pandas as pd
+import plotly.graph_objects as go
 
 # Import project modules
 from config import (
@@ -11,13 +11,15 @@ from config import (
     DEFAULT_WATCHLIST_SYMBOLS, DEFAULT_SYMBOL_INDEX, DEFAULT_SYMBOL_EQUITY
 )
 from auth_5paisa import display_login_form, is_user_logged_in, get_authenticated_client, logout
-# from data_handler import ( # Will uncomment and use these later
-#     fetch_scrip_master, get_scrip_details, fetch_historical_data,
-#     calculate_indicators, get_live_market_data # (websocket or polling)
-# )
-# from plotting import create_ohlcv_chart # Will uncomment and use this later
-# from patterns import detect_candlestick_patterns # Will uncomment and use this later
-# from predictive_models import get_prediction # Will uncomment and use this later
+from data_handler import (
+    fetch_scrip_master,
+    get_scrip_details,
+    fetch_historical_data,
+    calculate_technical_indicators,
+)
+from plotting import create_ohlcv_chart
+from patterns import detect_candlestick_patterns
+from predictive_models import get_prediction
 
 # --- Page Configuration (Must be the first Streamlit command) ---
 st.set_page_config(
@@ -240,22 +242,17 @@ initialize_session_state()
 
 def load_scrip_master_once():
     if st.session_state["scrip_master_df"] is None:
-        # client = get_authenticated_client()
-        # if client:
-        #     with st.spinner("Fetching Scrip Master..."):
-        #         st.session_state["scrip_master_df"] = fetch_scrip_master(client) # From data_handler.py
-        #         if st.session_state["scrip_master_df"] is None or st.session_state["scrip_master_df"].empty:
-        #             st.error("Failed to load Scrip Master. Some functionalities might be limited.")
-        #         else:
-        #             st.success("Scrip Master loaded.")
-        # else:
-        #     st.warning("Cannot load Scrip Master. Please log in.")
-        # Placeholder for now:
-        scrip_data = {'Symbol': DEFAULT_WATCHLIST_SYMBOLS + [DEFAULT_SYMBOL_INDEX],
-                      'ScripCode': [1000+i for i in range(len(DEFAULT_WATCHLIST_SYMBOLS) + 1)],
-                      'FullName': [f"{s} Full Name" for s in DEFAULT_WATCHLIST_SYMBOLS + [DEFAULT_SYMBOL_INDEX]]}
-        st.session_state["scrip_master_df"] = pd.DataFrame(scrip_data)
-        st.sidebar.info("Using placeholder Scrip Master.")
+        client = get_authenticated_client()
+        if client:
+            with st.spinner("Fetching Scrip Master..."):
+                df = fetch_scrip_master(client)
+            if df is None or df.empty:
+                st.error("Failed to load Scrip Master. Some functionalities might be limited.")
+            else:
+                st.session_state["scrip_master_df"] = df
+                st.success("Scrip Master loaded.")
+        else:
+            st.warning("Cannot load Scrip Master. Please log in.")
 
 
 def update_chart_data():
@@ -264,72 +261,65 @@ def update_chart_data():
         st.warning("Please select a scrip.")
         return
 
-    # client = get_authenticated_client()
-    # if not client:
-    #     st.warning("Please log in to fetch data.")
-    #     return
+    client = get_authenticated_client()
+    if not client:
+        st.warning("Please log in to fetch data.")
+        return
 
-    # scrip_details = get_scrip_details(st.session_state["scrip_master_df"], st.session_state["selected_scrip_symbol"])
-    # if scrip_details is None:
-    #     st.error(f"Could not find details for scrip: {st.session_state['selected_scrip_symbol']}")
-    #     return
+    scrip_details = get_scrip_details(
+        st.session_state["scrip_master_df"],
+        st.session_state["selected_scrip_symbol"],
+    )
+    if scrip_details is None:
+        st.error(
+            f"Could not find details for scrip: {st.session_state['selected_scrip_symbol']}"
+        )
+        return
 
-    # with st.spinner(f"Loading data for {st.session_state['selected_scrip_symbol']} ({st.session_state['selected_timeframe']})..."):
+    with st.spinner(
+        f"Loading data for {st.session_state['selected_scrip_symbol']} ({st.session_state['selected_timeframe']})..."
+    ):
         # --- 1. Fetch OHLCV Data ---
-        # st.session_state["current_ohlcv_df"] = fetch_historical_data(
-        #     client,
-        #     scrip_details, # Pass ScripCode, Exchange, etc.
-        #     st.session_state["selected_timeframe"]
-        # )
-        # Placeholder OHLCV data
-        dates = pd.to_datetime(pd.date_range(end=pd.Timestamp.now(), periods=200, freq='B'))
-        data_size = len(dates)
-        ohlcv = pd.DataFrame({
-            'Datetime': dates,
-            'Open': pd.Series(range(100, 100 + data_size)) + pd.Series(range(data_size)) * 0.1 + (pd.Series(np.random.rand(data_size)) * 10),
-            'High': pd.Series(range(105, 105 + data_size)) + pd.Series(range(data_size)) * 0.1 + (pd.Series(np.random.rand(data_size)) * 12),
-            'Low': pd.Series(range(95, 95 + data_size)) + pd.Series(range(data_size)) * 0.1 + (pd.Series(np.random.rand(data_size)) * 8),
-            'Close': pd.Series(range(102, 102 + data_size)) + pd.Series(range(data_size)) * 0.1 + (pd.Series(np.random.rand(data_size)) * 11),
-            'Volume': pd.Series(range(1000, 1000 + data_size * 100, 100)) + (pd.Series(np.random.randint(100, 500, data_size)))
-        })
-        ohlcv['High'] = ohlcv[['Open', 'Close']].max(axis=1) + pd.Series(np.random.rand(data_size)) * 5
-        ohlcv['Low'] = ohlcv[['Open', 'Close']].min(axis=1) - pd.Series(np.random.rand(data_size)) * 5
-        st.session_state["current_ohlcv_df"] = ohlcv.set_index('Datetime')
+        st.session_state["current_ohlcv_df"] = fetch_historical_data(
+            client,
+            scrip_details,
+            st.session_state["selected_timeframe"],
+        )
 
-
-        # if st.session_state["current_ohlcv_df"] is None or st.session_state["current_ohlcv_df"].empty:
-        #     st.error(f"Failed to fetch OHLCV data for {st.session_state['selected_scrip_symbol']}.")
-        #     return
+        if (
+            st.session_state["current_ohlcv_df"] is None
+            or st.session_state["current_ohlcv_df"].empty
+        ):
+            st.error(
+                f"Failed to fetch OHLCV data for {st.session_state['selected_scrip_symbol']}"
+            )
+            return
 
         # --- 2. Calculate Selected Indicators ---
-        # st.session_state["current_indicator_data"] = calculate_indicators(
-        #     st.session_state["current_ohlcv_df"],
-        #     st.session_state["enabled_indicators"] # Pass the dict of enabled ones
-        # )
+        st.session_state["current_indicator_data"] = calculate_technical_indicators(
+            st.session_state["current_ohlcv_df"],
+            st.session_state["enabled_indicators"],
+        )
 
         # --- 3. Detect Candlestick Patterns ---
-        # if st.session_state["show_candlestick_patterns"]:
-        #     st.session_state["detected_patterns_data"] = detect_candlestick_patterns(
-        #         st.session_state["current_ohlcv_df"]
-        #         # Consider passing CANDLESTICK_PATTERNS_TO_DETECT from config
-        #     )
-        # else:
-        #     st.session_state["detected_patterns_data"] = None
+        if st.session_state["show_candlestick_patterns"]:
+            st.session_state["detected_patterns_data"] = detect_candlestick_patterns(
+                st.session_state["current_ohlcv_df"]
+            )
+        else:
+            st.session_state["detected_patterns_data"] = None
 
         # --- 4. Get AI Predictions ---
-        # predictions = {}
-        # for horizon_key, horizon_config in PREDICTION_HORIZONS.items():
-        #     # This would involve feature engineering based on current_ohlcv_df and indicator_data
-        #     # and then calling the appropriate model.
-        #     predictions[horizon_key] = get_prediction(
-        #         st.session_state["current_ohlcv_df"],
-        #         st.session_state["current_indicator_data"],
-        #         st.session_state["selected_scrip_symbol"],
-        #         horizon_key,
-        #         horizon_config
-        #     )
-        # st.session_state["current_predictions"] = predictions
-    pass # End of with st.spinner
+        predictions = {}
+        for horizon_key, horizon_config in PREDICTION_HORIZONS.items():
+            predictions[horizon_key] = get_prediction(
+                st.session_state["current_ohlcv_df"],
+                st.session_state["current_indicator_data"],
+                st.session_state["selected_scrip_symbol"],
+                horizon_key,
+                horizon_config,
+            )
+        st.session_state["current_predictions"] = predictions
 
 # --- Main Application Layout ---
 
@@ -444,36 +434,13 @@ else:
     with chart_container:
         st.subheader("Price Chart & Indicators")
         if st.session_state["current_ohlcv_df"] is not None and not st.session_state["current_ohlcv_df"].empty:
-            # fig = create_ohlcv_chart( # from plotting.py
-            #     st.session_state["current_ohlcv_df"],
-            #     st.session_state["selected_scrip_symbol"],
-            #     st.session_state["current_indicator_data"],
-            #     st.session_state["enabled_indicators"], # To know which ones to plot
-            #     st.session_state["detected_patterns_data"]
-            # )
-            # Placeholder chart
-            import numpy as np # ensure numpy is imported
-            INITIAL_CANDLES_TO_DISPLAY = 100  # Number of candles to display on the chart
-            df_plot = st.session_state["current_ohlcv_df"].tail(INITIAL_CANDLES_TO_DISPLAY)
-            fig = go.Figure(data=[go.Candlestick(x=df_plot.index,
-                                               open=df_plot['Open'],
-                                               high=df_plot['High'],
-                                               low=df_plot['Low'],
-                                               close=df_plot['Close'],
-                                               name="OHLC")])
-            fig.update_layout(
-                title=f"{st.session_state.get('selected_scrip_symbol', 'N/A')} - {st.session_state.get('selected_timeframe', 'N/A')}",
-                xaxis_title="Date",
-                yaxis_title="Price",
-                xaxis_rangeslider_visible=False,
-                height=600,
-                template="plotly_dark", # Use Plotly's dark theme as a base
-                paper_bgcolor='rgba(0,0,0,0)', # Transparent paper
-                plot_bgcolor='#2D2D30' # Plot area background
+            fig = create_ohlcv_chart(
+                st.session_state["current_ohlcv_df"],
+                st.session_state["selected_scrip_symbol"],
+                st.session_state["current_indicator_data"],
+                st.session_state["enabled_indicators"],
+                st.session_state["detected_patterns_data"],
             )
-            fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='#4A4A4A')
-            fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='#4A4A4A')
-
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No chart data to display. Select a scrip and timeframe, then click 'Reload Data'.")
@@ -488,30 +455,34 @@ else:
     for i, (horizon_key, horizon_config) in enumerate(PREDICTION_HORIZONS.items()):
         with pred_tabs[i]:
             st.markdown(f"#### {horizon_config['label']} Forecast")
-            # prediction_data = st.session_state["current_predictions"].get(horizon_key)
-            # if prediction_data:
-            #     # Display the prediction (e.g., UP/DOWN/FLAT, target price, confidence)
-            #     # Display "expected profit" metric
-            #     st.metric(label="Signal", value=str(prediction_data.get("signal", "N/A")))
-            #     st.metric(label="Confidence", value=f"{prediction_data.get('confidence', 0)*100:.2f}%")
-            #     st.metric(label="Expected Return", value=f"{prediction_data.get('expected_return_pct', 0)*100:.2f}%")
-            #     st.write(f"Model used: {prediction_data.get('model_type', 'N/A')}")
-            #     st.write(f"Last updated: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}") # Placeholder
-            # else:
-            #     st.info(f"No {horizon_config['label']} prediction available for the current scrip.")
-            st.info(f"Placeholder for {horizon_config['label']} predictions.")
-            st.write("Expected Profit (based on historical data): XYZ%")
-            st.write("Confidence: High/Medium/Low")
+            prediction_data = st.session_state["current_predictions"].get(horizon_key)
+            if prediction_data:
+                st.metric(label="Signal", value=str(prediction_data.get("signal", "N/A")))
+                st.metric(
+                    label="Confidence",
+                    value=f"{prediction_data.get('confidence', 0)*100:.2f}%",
+                )
+                st.metric(
+                    label="Expected Return",
+                    value=f"{prediction_data.get('expected_return_pct', 0)*100:.2f}%",
+                )
+                st.write(f"Model used: {prediction_data.get('model_type', 'N/A')}")
+            else:
+                st.info(
+                    f"No {horizon_config['label']} prediction available for the current scrip."
+                )
 
     with pred_tabs[-1]: # Pattern Insights Tab
         st.markdown("#### Candlestick Pattern Insights")
-        # if st.session_state["detected_patterns_data"] is not None and not st.session_state["detected_patterns_data"].empty:
-        #     st.write("Recently Detected Patterns:")
-        #     # Display a summary of detected patterns, maybe the last few occurrences
-        #     # st.dataframe(st.session_state["detected_patterns_data"].tail()) # Example
-        # else:
-        #     st.info("No specific candlestick patterns detected recently, or pattern detection is off.")
-        st.info("Placeholder for pattern analysis and interpretation.")
+        if (
+            st.session_state["detected_patterns_data"] is not None
+            and not st.session_state["detected_patterns_data"].empty
+        ):
+            st.dataframe(st.session_state["detected_patterns_data"].tail())
+        else:
+            st.info(
+                "No specific candlestick patterns detected recently, or pattern detection is off."
+            )
 
 # --- Footer ---
 st.markdown(
