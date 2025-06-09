@@ -2,22 +2,33 @@
 ## Project Structure
 
 ```
-.
+
+
 ├── app.py                # Main Streamlit application
 ├── auth_5paisa.py        # Authentication helpers for 5paisa
 ├── config.py             # Central configuration constants
 ├── data_handler.py       # Data fetching and processing logic
-├── patterns.py           # (empty placeholder)
-├── plotting.py           # (empty placeholder)
-├── predictive_models.py  # (empty placeholder)
+├── patterns.py           # Candlestick pattern detection helpers
+├── plotting.py           # Plotly chart generation utilities
+├── predictive_models.py  # Basic prediction stubs
 ├── requirements.txt      # Python dependencies
 └── utils.py              # Miscellaneous helpers
 ```
 
+### Installation
+
+Install dependencies with pip:
+
+```bash
+pip install -r requirements.txt
+```
+
+The `setuptools` package is required so that `pandas-ta` can import `pkg_resources`.
+
 ### app.py
 * Configures the Streamlit page and applies a custom dark theme.
 * Initializes values in `st.session_state` via `initialize_session_state()`.
-* Provides helper functions such as `load_scrip_master_once()` and `update_chart_data()` (currently filled with placeholders).
+* Provides helper functions such as `load_scrip_master_once()` and `update_chart_data()` which fetch data, compute indicators and render charts.
 * Renders the sidebar controls and main dashboard tabs using Streamlit widgets. Login UI is provided by `display_login_form()` from `auth_5paisa`.
 * Includes a `__main__` guard that prints a message if the file is run outside of Streamlit, avoiding repeated "missing ScriptRunContext" warnings.
 
